@@ -27,8 +27,12 @@ module tb ();
   wire VGND = 1'b0;
 `endif
 
-  // Replace tt_um_example with your module name:
-  tt_um_example user_project (
+  // Convenience taps for test.py (Tiny VGA PMOD pinout)
+  wire hsync = uo_out[7];
+  wire vsync = uo_out[3];
+  wire [5:0] rgb = {uo_out[0], uo_out[4], uo_out[1], uo_out[5], uo_out[2], uo_out[6]};
+
+  tt_um_pong user_project (
 
       // Include power ports for the Gate Level test:
 `ifdef GL_TEST
