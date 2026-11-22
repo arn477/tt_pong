@@ -4,7 +4,7 @@ Used to generate the Tiny Tapeout project datasheet. Images in this folder must 
 
 ## How it works
 
-Two-player Pong rendered as a 640x480 @ 60 Hz VGA signal. Four buttons (up/down per player) move the paddles; the design is pure RTL (Verilog-2005) with no frame buffer: every pixel is computed combinationally from the current beam position and the game state registers.
+Two games rendered as a 640x480 @ 60 Hz VGA signal: two-player Pong and a one-player brick breaker, chosen by a game-select input. Four buttons (up/down per player) move the paddles; the design is pure RTL (Verilog-2005) with no frame buffer: every pixel is computed combinationally from the current beam position and the game state registers.
 
 ![Pong block diagram](pong_block_diagram.png)
 
@@ -13,6 +13,7 @@ Two-player Pong rendered as a 640x480 @ 60 Hz VGA signal. Four buttons (up/down 
 - Clock: 25 MHz (nominal 25.175 MHz pixel clock; 25.000 MHz is within VGA monitor tolerance). One pixel per clock.
 - Reset: `rst_n` (active low), applied synchronously. All state registers use synchronous reset.
 - Buttons are asynchronous: each passes through a 2-FF synchronizer before use. No debounce is needed because paddle motion is sampled once per frame.
+- The game select `ui[4]` goes through the same synchronizer. It is meant to be a switch that is set before releasing reset: changing it mid-game is harmless electrically but leaves the scores and bricks of the previous game in place, so reset after changing it.
 - VGA output uses the [Tiny VGA PMOD](https://github.com/mole99/tiny-vga) pinout (2 bits per color, 6 bits total).
 
 | Pin | Dir | Signal | Pin | Dir | Signal |
@@ -21,8 +22,8 @@ Two-player Pong rendered as a 640x480 @ 60 Hz VGA signal. Four buttons (up/down 
 | `ui[1]` | in | P1 down | `uo[1]` | out | G1 (MSB) |
 | `ui[2]` | in | P2 up | `uo[2]` | out | B1 (MSB) |
 | `ui[3]` | in | P2 down | `uo[3]` | out | VSYNC |
-| `ui[7:4]`, `uio[7:0]` | - | unused (`uio_oe = 0`) | `uo[4]` | out | R0 (LSB) |
-| | | | `uo[5]` | out | G0 (LSB) |
+| `ui[4]` | in | Game select (0 = Pong, 1 = brick breaker) | `uo[4]` | out | R0 (LSB) |
+| `ui[7:5]`, `uio[7:0]` | - | unused (`uio_oe = 0`) | `uo[5]` | out | G0 (LSB) |
 | | | | `uo[6]` | out | B0 (LSB) |
 | | | | `uo[7]` | out | HSYNC |
 
@@ -41,8 +42,8 @@ Two-player Pong rendered as a 640x480 @ 60 Hz VGA signal. Four buttons (up/down 
 |---|---|
 | `tt_um_pong` (`project.v`) | TT top level: pin mapping, wires the blocks together (instances `btn_sync`, `vga`, `game`, `render`), output registers |
 | `vga_sync` (`vga_sync.v`) | `h_cnt`/`v_cnt`, `hsync`, `vsync`, `active`, and a one-cycle `frame_tick` at the start of vertical blanking (`h_cnt==0 && v_cnt==480`) |
-| `input_sync` (`input_sync.v`) | 2-FF synchronizer for the four buttons |
-| `pong_game` (`pong_game.v`) | Paddle, ball and score state; updated only on `frame_tick` |
+| `input_sync` (`input_sync.v`) | 2-FF synchronizer for the four buttons and the game select |
+| `pong_game` (`pong_game.v`) | Paddle, ball, score and brick state for both games (`mode` input selects the rules); updated only on `frame_tick` |
 | `pong_render` (`pong_render.v`) | Combinational pixel-in-object comparators -> 2-bit RGB |
 | `pong_defs.vh` | Shared `localparam` constants (geometry, speeds, timing, colors), `` `include ``d inside each module body. It is a header, so it is not listed in `source_files` / `PROJECT_SOURCES`; it is found next to the including file / via `-I src` |
 
@@ -60,9 +61,19 @@ Coordinates are in pixels, origin top-left. Because state only changes on `frame
 
 The paddle check is a *crossing* test on the pre-update position plus velocity rather than a plain overlap test. This avoids tunnelling, and because the direction is set (not toggled) and only a ball in front of the face can bounce, a ball can never get stuck flipping direction inside a paddle. A ball that has already passed the face is a miss and continues to the edge. Positions are unsigned; the "x < 0" case is detected as `ball_x < 4` while moving left, so nothing ever wraps.
 
+### Brick breaker (`mode` = 1, `ui[4]` high)
+
+A one-player game that shares Pong's hardware: the same ball registers, the same left paddle (player 1 buttons) and the same wall, paddle-bounce and serve logic. It is played sideways, so the paddle did not need a horizontal variant. The only new state is one flip-flop per brick.
+
+- **Wall of bricks:** 2 columns x 15 rows = 30 bricks on a 32x32 px grid at x = 512-575 (column = `x[5]`, row = `y[8:5]`, so finding the brick under a point is bit-slicing, not arithmetic). All bricks are present after reset. The 64 px behind the wall (x = 576-639) is empty, so a ball that breaks through can bounce around behind it.
+- **Right edge:** a solid wall instead of a goal; the ball bounces back. There is no right paddle and player 2's buttons do nothing.
+- **Brick hit:** one probe point is tested each frame, the ball's leading edge in x and its center in y, at the ball's *next* position. If it lies inside a live brick, that brick is removed and the ball stays where it is for that frame with one direction flipped: `vx` if the probe entered the brick's cell through a vertical face, otherwise `vy`. Because only one point is probed, the ball's corners can overlap a brick by up to 4 px when passing it sideways.
+- **Miss:** if the ball leaves on the left, `score_r` counts the miss (shown as red boxes) and the ball is re-served from the center toward the paddle. The wall is kept.
+- **Game over:** after 3 misses (lost) or when the last brick is removed (won), the ball freezes until reset.
+
 ### Rendering (`pong_render`)
 
-Pure combinational function of `h_cnt`, `v_cnt`, and game state, computed from range comparators (no memories). Where objects overlap, priority is ball > paddles > score boxes > net:
+Pure combinational function of `h_cnt`, `v_cnt`, and game state, computed from range comparators (no memories). Where objects overlap, priority is ball > paddles > bricks > score boxes > net. In brick breaker mode the right paddle and the net are not drawn:
 
 | Object | Condition | Color |
 |---|---|---|
@@ -70,6 +81,7 @@ Pure combinational function of `h_cnt`, `v_cnt`, and game state, computed from r
 | Ball | inside 8x8 ball rect | yellow (`R=G=11`, `B=00`) |
 | Center net | `h_cnt` in 319-320 and `v_cnt[4]` (2 px wide, dashed 16 px on / 16 px off) | grey (`R=G=B=01`) |
 | Score boxes | row y in 8-15; one box per point on an 8 px pitch, 6 px lit + 2 px gap so points can be counted; left player boxes starting at x=240 going right, right player boxes starting at x=392 going right (`n < score`) | green (left) / red (right) |
+| Bricks (brick breaker only) | live brick's 32x32 cell, 30x30 px lit (2 px gap) | cyan (column 0) / magenta (column 1) |
 | Background | otherwise | black |
 
 Output registers: RGB and syncs are registered once so outputs are glitch-free (one pixel of latency; sync and color are delayed together to stay aligned).
@@ -103,12 +115,14 @@ A real frame is 420000 clocks, so the tests are split in two:
 - **Scoring/game over:** score increments for the correct player, re-serve at center toward the loser, freeze at 7, reset clears.
 - **LFSR:** steps on `frame_tick` and while a button is held, visits all 15 states.
 - **Whole-game runs:** an unforced first point from reset (frame-exact), and a 1500-frame rally where both paddles track the ball through the buttons and nobody may score.
+- **Brick breaker:** full wall after reset; front-face, top-face and back-face brick hits remove exactly one brick and flip the right direction; right-wall bounce; no right paddle; misses, game over after 3 misses, win when the wall is cleared; Pong ignores the bricks; an autoplay run where the paddle tracks the ball and bricks must keep disappearing without a miss.
 
 **`test/tb_pong.sv`** - top-level test of `tt_um_pong` at real VGA timing:
 
 - **VGA timing:** `hsync` period = 800 clocks, pulse width 96 clocks; `vsync` period = 525 lines, pulse width 2 lines.
 - **Reset / buttons:** reset state, then `ui_in` driven for several frames through the synchronizer.
 - **Rendering:** a monitor compares all 8 output pins on every clock against an independent reference model (colors, blanking and sync position), plus per-frame pixel counts per color and sampled pixels (paddle, ball, net, score boxes, background, blanking).
+- **Brick breaker:** `ui[4]` held high from reset selects the mode; the same monitor and pixel counts cover the full wall, removed bricks, miss boxes, and the hidden net and right paddle.
 
 Top-level tests use a frame-count helper (wait N `frame_tick`s) instead of cycle counts. Game state is checked, and occasionally preset, through hierarchical references (`dut.game.ball_x_q` etc.).
 
@@ -120,8 +134,10 @@ Top-level tests use a frame-count helper (wait N `frame_tick`s) instead of cycle
 2. Set the TT clock to 25 MHz and release `rst_n`.
 3. Drive `ui[0]`/`ui[1]` (player 1) and `ui[2]`/`ui[3]` (player 2) high with push buttons (pull-downs required; pressed = 1).
 4. The ball serves automatically. First to 7 wins; reset to play again.
+5. For brick breaker, hold `ui[4]` high (a switch) and reset. Player 1's buttons move the paddle; clear all 30 bricks before missing the ball 3 times.
 
 ## External hardware
 
 - [Tiny VGA PMOD](https://github.com/mole99/tiny-vga) on the output header + VGA monitor.
 - Four push buttons (active high, with pull-down resistors), e.g. on a PMOD button board, connected to `ui[0]`-`ui[3]`.
+- A switch on `ui[4]` to select the game (the demo board's input DIP switch works).

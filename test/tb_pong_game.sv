@@ -10,9 +10,13 @@ module tb_pong_game;
     logic       rst_n = 1'b0;
     logic       frame_tick = 1'b0;
     logic [3:0] btn = 4'b0000;      // {p2_down, p2_up, p1_down, p1_up}
+    logic       mode = 1'b0;        // 0 = Pong, 1 = brick breaker
 
     wire  [9:0] p1_y, p2_y, ball_x, ball_y;
     wire  [2:0] score_l, score_r;
+    wire  [31:0] bricks;
+
+    localparam logic [31:0] BRICKS_FULL = 32'h7FFF_7FFF;    // 2 columns x 15 rows
 
     localparam logic [3:0] P1_UP = 4'b0001, P1_DOWN = 4'b0010, P2_UP = 4'b0100, P2_DOWN = 4'b1000;
 
@@ -20,6 +24,7 @@ module tb_pong_game;
         .clk        (clk),
         .rst_n      (rst_n),
         .frame_tick (frame_tick),
+        .mode       (mode),
         .p1_up      (btn[0]),
         .p1_down    (btn[1]),
         .p2_up      (btn[2]),
@@ -29,7 +34,8 @@ module tb_pong_game;
         .ball_x     (ball_x),
         .ball_y     (ball_y),
         .score_l    (score_l),
-        .score_r    (score_r)
+        .score_r    (score_r),
+        .bricks     (bricks)
     );
 
     always #20 clk = ~clk;
@@ -345,6 +351,148 @@ module tb_pong_game;
         check("rally: nothing left the field", out_of_field, 0);
     endtask
 
+    // ================= brick breaker (mode = 1) =================
+    function automatic int count_bricks();
+        int n;
+        n = 0;
+        for (int i = 0; i < 32; i++) if (bricks[i]) n++;
+        return n;
+    endfunction
+
+    task automatic test_brick_reset();
+        $display("--- test_brick_reset");
+        mode = 1'b1;
+        do_reset();
+        check("brick: wall full after reset", bricks, BRICKS_FULL);
+        check("brick: 30 bricks", count_bricks(), 30);
+        check_ball("brick: reset", 316, 236, 1'b0, 1'b0);
+        check("brick: no misses", score_r, 0);
+    endtask
+
+    // Pong must be unaffected by the brick wall.
+    task automatic test_pong_ignores_bricks();
+        $display("--- test_pong_ignores_bricks");
+        mode = 1'b0;
+        do_reset();
+        set_ball(500, 100, 1'b0, 1'b0);
+        tick(2);
+        check_ball("pong: flies through wall area", 508, 106, 1'b0, 1'b0);
+        check("pong: bricks untouched", bricks, BRICKS_FULL);
+    endtask
+
+    task automatic test_brick_hits();
+        $display("--- test_brick_hits");
+        mode = 1'b1;
+        do_reset();
+        // Head-on into the front face (x = 512) of column 0, row 3 (y = 96..127).
+        set_ball(500, 100, 1'b0, 1'b0);
+        tick(1);  check_ball("brick: approach", 504, 103, 1'b0, 1'b0);
+        check("brick: wall still full", bricks, BRICKS_FULL);
+        tick(1);  check_ball("brick: front-face hit", 504, 103, 1'b1, 1'b0);
+        check("brick: {col 0,row 3} removed", bricks, BRICKS_FULL & ~(32'd1 << 3));
+        tick(1);  check_ball("brick: flies back", 500, 106, 1'b1, 1'b0);
+        // Same path again: the hole lets the ball into the wall...
+        set_ball(500, 100, 1'b0, 1'b0);
+        tick(2);  check_ball("brick: enters the hole", 508, 106, 1'b0, 1'b0);
+        tick(5);  check_ball("brick: inside the hole", 528, 121, 1'b0, 1'b0);
+        // ...where it meets row 4 from above: a horizontal face flips vy.
+        tick(1);  check_ball("brick: top-face hit", 528, 121, 1'b0, 1'b1);
+        check("brick: {col 0,row 4} removed", bricks, BRICKS_FULL & ~(32'd1 << 3) & ~(32'd1 << 4));
+        check("brick: hits are not misses", score_r, 0);
+        // Column 1 from behind (moving left from the gap at the right edge).
+        set_ball(580, 200, 1'b1, 1'b0);
+        tick(1);  check_ball("brick: back-face approach", 576, 203, 1'b1, 1'b0);
+        tick(1);  check_ball("brick: back-face hit", 576, 203, 1'b0, 1'b0);
+        check("brick: {col 1,row 6} removed",
+              bricks, BRICKS_FULL & ~(32'd1 << 3) & ~(32'd1 << 4) & ~(32'd1 << 22));
+    endtask
+
+    task automatic test_brick_walls();
+        $display("--- test_brick_walls");
+        mode = 1'b1;
+        do_reset();
+        @(negedge clk); dut.bricks_q = 32'd1;       // only {col 0,row 0} left
+        // The right edge is a wall, not a goal.
+        set_ball(624, 200, 1'b0, 1'b0);
+        tick(1);  check_ball("brick: near right wall", 628, 203, 1'b0, 1'b0);
+        tick(1);  check_ball("brick: right wall bounce", 632, 206, 1'b1, 1'b0);
+        tick(1);  check_ball("brick: after right wall", 628, 209, 1'b1, 1'b0);
+        check("brick: no point at right wall", score_l, 0);
+        // There is no right paddle in this mode.
+        set_ball(604, 236, 1'b0, 1'b0);
+        tick(1);  check_ball("brick: no right paddle", 608, 239, 1'b0, 1'b0);
+        // The left paddle still works.
+        set_ball(28, 236, 1'b1, 1'b0);
+        tick(1);  check_ball("brick: left paddle hit", 24, 239, 1'b0, 1'b0);
+    endtask
+
+    task automatic test_brick_miss_and_game_over();
+        $display("--- test_brick_miss_and_game_over");
+        mode = 1'b1;
+        do_reset();
+        set_ball(4, 100, 1'b1, 1'b1);
+        tick(1);  check("brick: no miss yet", score_r, 0);
+        tick(1);
+        check("brick: miss counted", score_r, 1);
+        check("brick: score_l unused", score_l, 0);
+        check("brick: re-serve ball_x", ball_x, 316);
+        check("brick: re-serve ball_y", ball_y, 236);
+        check("brick: wall kept after miss", bricks, BRICKS_FULL);
+        @(negedge clk); dut.score_r_q = 3'd2;
+        set_ball(0, 100, 1'b1, 1'b1);
+        tick(1);
+        check("brick: third miss", score_r, 3);
+        tick(10);
+        check("brick: game over ball_x", ball_x, 316);
+        check("brick: game over ball_y", ball_y, 236);
+        check("brick: misses stay 3", score_r, 3);
+        do_reset();
+        check("brick: reset clears misses", score_r, 0);
+    endtask
+
+    task automatic test_brick_win();
+        $display("--- test_brick_win");
+        mode = 1'b1;
+        do_reset();
+        @(negedge clk); dut.bricks_q = 32'd1 << 3;  // one brick left
+        set_ball(500, 100, 1'b0, 1'b0);
+        tick(2);
+        check("brick: last brick removed", bricks, 0);
+        tick(10);
+        check("brick: win freezes ball_x", ball_x, 504);
+        check("brick: win freezes ball_y", ball_y, 103);
+        check("brick: win without misses", score_r, 0);
+        do_reset();
+        check("brick: reset rebuilds wall", bricks, BRICKS_FULL);
+    endtask
+
+    // The paddle tracks the ball through its buttons: bricks must keep
+    // disappearing, the ball must never be missed and never leave the field.
+    task automatic test_brick_autoplay();
+        int out_of_field;
+        int frames;
+        $display("--- test_brick_autoplay");
+        mode = 1'b1;
+        do_reset();
+        out_of_field = 0;
+        frames       = 0;
+        while (frames < 6000 && bricks != 32'd0) begin
+            btn = 4'b0000;
+            if      (ball_y + 4 < p1_y + 28) btn = P1_UP;
+            else if (ball_y + 4 > p1_y + 36) btn = P1_DOWN;
+            tick(1);
+            frames++;
+            if (ball_x > 632 || ball_y > 472 || p1_y > 416) out_of_field++;
+        end
+        btn = 4'b0000;
+        $display("       autoplay: %0d bricks left after %0d frames", count_bricks(), frames);
+        check("brick autoplay: no misses", score_r, 0);
+        check("brick autoplay: at least 10 bricks broken", count_bricks() <= 20, 1);
+        check("brick autoplay: nothing left the field", out_of_field, 0);
+        check("brick autoplay: only real bricks", bricks & ~BRICKS_FULL, 0);
+        mode = 1'b0;
+    endtask
+
     initial begin
         test_reset();
         test_paddle_move();
@@ -357,6 +505,13 @@ module tb_pong_game;
         test_lfsr();
         test_first_point();
         test_rally();
+        test_pong_ignores_bricks();
+        test_brick_reset();
+        test_brick_hits();
+        test_brick_walls();
+        test_brick_miss_and_game_over();
+        test_brick_win();
+        test_brick_autoplay();
         $display("TESTBENCH_SUMMARY: %0d PASS, %0d FAIL", pass_count, fail_count);
         $display("TESTBENCH_RESULT: %s", (fail_count == 0) ? "PASS" : "FAIL");
         $finish;

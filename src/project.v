@@ -5,9 +5,11 @@
 `default_nettype none
 
 /*
- * Tiny Tapeout top level for two-player VGA Pong. Maps the four buttons on
- * ui_in[3:0] and drives a Tiny VGA PMOD on uo_out. Colors and syncs are
- * registered together, so the output lags the counters by one pixel.
+ * Tiny Tapeout top level for VGA Pong / brick breaker. Maps the four buttons
+ * on ui_in[3:0] and the game select on ui_in[4] (0 = Pong, 1 = brick breaker,
+ * change only while in reset), and drives a Tiny VGA PMOD on uo_out. Colors
+ * and syncs are registered together, so the output lags the counters by one
+ * pixel.
  */
 module tt_um_pong (
     input  wire [7:0] ui_in,    // Dedicated inputs
@@ -21,6 +23,7 @@ module tt_um_pong (
 );
 
     wire [3:0] btn;             // {p2_down, p2_up, p1_down, p1_up}
+    wire       mode;            // 0 = Pong, 1 = brick breaker
 
     wire [9:0] h_cnt;
     wire [9:0] v_cnt;
@@ -35,17 +38,18 @@ module tt_um_pong (
     wire [9:0] ball_y;
     wire [2:0] score_l;
     wire [2:0] score_r;
+    wire [31:0] bricks;
 
     wire [5:0] rgb;             // {R1, R0, G1, G0, B1, B0}
 
     input_sync #(
-        .WIDTH (4)
+        .WIDTH (5)
     ) btn_sync (
         .clk      (clk       ),
         .rst_n    (rst_n     ),
 
-        .async_in (ui_in[3:0]),
-        .sync_out (btn       )
+        .async_in (ui_in[4:0] ),
+        .sync_out ({mode, btn})
     );
 
     vga_sync vga (
@@ -64,6 +68,7 @@ module tt_um_pong (
         .clk        (clk       ),
         .rst_n      (rst_n     ),
         .frame_tick (frame_tick),
+        .mode       (mode      ),
 
         .p1_up      (btn[0]    ),
         .p1_down    (btn[1]    ),
@@ -75,13 +80,15 @@ module tt_um_pong (
         .ball_x     (ball_x    ),
         .ball_y     (ball_y    ),
         .score_l    (score_l   ),
-        .score_r    (score_r   )
+        .score_r    (score_r   ),
+        .bricks     (bricks    )
     );
 
     pong_render render (
         .h_cnt   (h_cnt  ),
         .v_cnt   (v_cnt  ),
         .active  (active ),
+        .mode    (mode   ),
 
         .p1_y    (p1_y   ),
         .p2_y    (p2_y   ),
@@ -89,6 +96,7 @@ module tt_um_pong (
         .ball_y  (ball_y ),
         .score_l (score_l),
         .score_r (score_r),
+        .bricks  (bricks ),
 
         .rgb     (rgb    )
     );
@@ -117,6 +125,6 @@ module tt_um_pong (
     assign uio_oe  = 8'd0;
 
     // List all unused inputs to prevent warnings
-    wire _unused = &{ena, ui_in[7:4], uio_in, 1'b0};
+    wire _unused = &{ena, ui_in[7:5], uio_in, 1'b0};
 
 endmodule

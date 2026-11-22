@@ -1,0 +1,39 @@
+%% Block diagram of tt_um_pong. The diagrams workflow renders this file to
+%% pong_block_diagram.png (used by info.md) whenever it changes.
+%%{init: {"themeVariables": {"edgeLabelBackground": "transparent"}, "themeCSS": ".edgeLabel, .edgeLabel p, .labelBkg { background-color: transparent !important; } .edgeLabel foreignObject { overflow: visible; transform: translate(0px, -17px); }"}}%%
+flowchart LR
+    btn["<b>4 buttons</b><br/>P1: up, down<br/>P2: up, down"]
+    sel["<b>Game select switch</b><br/>0 = Pong<br/>1 = brick breaker"]
+
+    subgraph top["tt_um_pong (25 MHz)"]
+        isync["<b>input_sync</b><br/>Syncs buttons<br/>and game select"]
+        game["<b>pong_game</b><br/>Rules for both games<br/>Paddles, ball, score, bricks<br/>Updates once per frame"]
+        render["<b>pong_render</b><br/>Picks each pixel's color<br/>from the game state"]
+        vga["<b>vga_sync</b><br/>Tracks screen position<br/>Makes hsync / vsync<br/>Pulses once per frame"]
+        oreg["<b>Output registers</b><br/>Clean, aligned VGA signals"]
+    end
+
+    pmod["<b>Tiny VGA PMOD</b><br/>To VGA monitor"]
+
+    btn -- "async" --> isync
+    sel -- "async" --> isync
+    isync -- "buttons, mode" --> game
+    isync -- "mode" --> render
+    game -- "game state" --> render
+    vga -- "frame pulse" --> game
+    vga -- "pixel position" --> render
+    render -- "color" --> oreg
+    vga -- "sync" --> oreg
+    oreg -- "VGA" --> pmod
+
+    classDef ext fill:#f5f5f5,stroke:#666666,color:#222222,stroke-width:2px
+    classDef sync fill:#dae8fc,stroke:#6c8ebf,color:#222222,stroke-width:2px
+    classDef logic fill:#d5e8d4,stroke:#82b366,color:#222222,stroke-width:2px
+    classDef timing fill:#ffe6cc,stroke:#d79b00,color:#222222,stroke-width:2px
+    classDef reg fill:#e1d5e7,stroke:#9673a6,color:#222222,stroke-width:2px
+    class btn,sel,pmod ext
+    class isync sync
+    class game,render logic
+    class vga timing
+    class oreg reg
+    style top fill:transparent,stroke:#888888,stroke-width:2px,stroke-dasharray:6 4,color:#222222

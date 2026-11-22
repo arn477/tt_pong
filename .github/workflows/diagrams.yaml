@@ -1,0 +1,53 @@
+name: diagrams
+
+# Renders every docs/*.mmd (Mermaid) to a PNG next to it and commits the
+# result, so docs/info.md can reference an image that the Tiny Tapeout
+# datasheet build understands.
+on:
+  push:
+    paths:
+      - 'docs/**.mmd'
+      - '.github/workflows/diagrams.yaml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v6
+
+      - name: Setup node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Render Mermaid diagrams
+        shell: bash
+        run: |
+          # Chrome's sandbox is not available on the hosted runners.
+          echo '{"args": ["--no-sandbox"]}' > "$RUNNER_TEMP/puppeteer.json"
+          for src in docs/*.mmd; do
+            out="${src%.mmd}.png"
+            echo "Rendering $src -> $out"
+            npx -y @mermaid-js/mermaid-cli@10.9.1 \
+              -p "$RUNNER_TEMP/puppeteer.json" \
+              -i "$src" -o "$out" \
+              -b transparent -w 1900
+          done
+
+      - name: Commit updated images
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/*.png
+          if git diff --cached --quiet; then
+            echo "Diagrams are up to date."
+          else
+            git commit -m "Render Mermaid diagrams"
+            git push
+          fi

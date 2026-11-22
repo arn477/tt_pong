@@ -2,6 +2,10 @@
 // body (after the port list); it only contains localparams.
 // All positions are in pixels, origin top-left.
 
+// Each module uses only some of these, so silence Verilator's per-module
+// unused-parameter warning for this header.
+/* verilator lint_off UNUSEDPARAM */
+
 // ---- VGA timing: 640x480 @ 60 Hz, 25 MHz pixel clock ----
 localparam [9:0] H_VISIBLE    = 10'd640;
 localparam [9:0] H_SYNC_START = 10'd656;   // visible + front porch
@@ -45,6 +49,16 @@ localparam [9:0] ZONE_LOWER   = 10'd43;
 localparam [2:0] SCORE_MAX    = 3'd7;
 localparam [3:0] LFSR_SEED    = 4'b1001;
 
+// ---- Brick breaker (mode = 1) ----
+// The wall is a grid of 32x32 px cells: 2 columns at x = 512..575
+// (x[9:6] == BRICK_X_SEL, column = x[5]) by 15 rows (row = y[8:5]).
+// Brick index = {column, row}; row 15 is below the screen and never used.
+localparam [3:0]  BRICK_X_SEL  = 4'b1000;
+localparam [31:0] BRICKS_FULL  = 32'h7FFF_7FFF;
+localparam [4:0]  BRICK_LIT    = 5'd30;     // lit pixels per 32 px cell
+localparam [9:0]  BALL_EDGE    = 10'd7;     // offset of the ball's far edge
+localparam [2:0]  MISSES_MAX   = 3'd3;      // misses that end the game
+
 // ---- Rendering ----
 localparam [9:0] NET_X        = 10'd319;   // 2 px wide: x = 319, 320
 localparam [9:0] NET_W        = 10'd2;
@@ -62,3 +76,7 @@ localparam [5:0] COLOR_YELLOW = 6'b11_11_00;
 localparam [5:0] COLOR_GREY   = 6'b01_01_01;
 localparam [5:0] COLOR_GREEN  = 6'b00_11_00;
 localparam [5:0] COLOR_RED    = 6'b11_00_00;
+localparam [5:0] COLOR_CYAN    = 6'b00_11_11;
+localparam [5:0] COLOR_MAGENTA = 6'b11_00_11;
+
+/* verilator lint_on UNUSEDPARAM */

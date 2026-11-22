@@ -39,6 +39,8 @@ module tb_pong;
     localparam logic [5:0] GREY   = 6'b01_01_01;
     localparam logic [5:0] GREEN  = 6'b00_11_00;
     localparam logic [5:0] RED    = 6'b11_00_00;
+    localparam logic [5:0] CYAN    = 6'b00_11_11;
+    localparam logic [5:0] MAGENTA = 6'b11_00_11;
 
     int pass_count = 0;
     int fail_count = 0;
@@ -58,7 +60,8 @@ module tb_pong;
     function automatic logic [7:0] model_pins(input int h, input int v,
                                               input int p1, input int p2,
                                               input int bx, input int by,
-                                              input int sl, input int sr);
+                                              input int sl, input int sr,
+                                              input logic mode, input logic [31:0] bricks);
         logic [5:0] c;
         logic       hs, vs;
         c = BLACK;
@@ -67,13 +70,16 @@ module tb_pong;
                 c = YELLOW;
             else if (h >= 16 && h < 24 && v >= p1 && v < p1 + 64)
                 c = WHITE;
-            else if (h >= 616 && h < 624 && v >= p2 && v < p2 + 64)
+            else if (!mode && h >= 616 && h < 624 && v >= p2 && v < p2 + 64)
                 c = WHITE;
+            else if (mode && h >= 512 && h < 576 && bricks[((h - 512) / 32) * 16 + v / 32]
+                     && (h % 32) < 30 && (v % 32) < 30)
+                c = (h < 544) ? CYAN : MAGENTA;
             else if (v >= 8 && v < 16 && h >= 240 && h < 240 + 8 * sl && ((h - 240) % 8) < 6)
                 c = GREEN;
             else if (v >= 8 && v < 16 && h >= 392 && h < 392 + 8 * sr && ((h - 392) % 8) < 6)
                 c = RED;
-            else if ((h == 319 || h == 320) && ((v / 16) % 2) == 1)
+            else if (!mode && (h == 319 || h == 320) && ((v / 16) % 2) == 1)
                 c = GREY;
         end
         hs = !(h >= 656 && h < 752);
@@ -84,7 +90,7 @@ module tb_pong;
     logic [7:0] exp_q;
     logic       exp_valid = 1'b0;
     int         mismatches = 0;
-    int         n_white, n_yellow, n_grey, n_green, n_red, n_other;
+    int         n_white, n_yellow, n_grey, n_green, n_red, n_cyan, n_magenta, n_other;
 
     // The DUT registers its outputs, so the pins seen before a clock edge
     // belong to the beam position/state sampled one edge earlier.
@@ -105,18 +111,22 @@ module tb_pong;
                     GREY:    n_grey++;
                     GREEN:   n_green++;
                     RED:     n_red++;
+                    CYAN:    n_cyan++;
+                    MAGENTA: n_magenta++;
                     default: n_other++;
                 endcase
             end
             exp_q     <= model_pins(dut.h_cnt, dut.v_cnt, dut.game.p1_y_q, dut.game.p2_y_q,
                                     dut.game.ball_x_q, dut.game.ball_y_q,
-                                    dut.game.score_l_q, dut.game.score_r_q);
+                                    dut.game.score_l_q, dut.game.score_r_q,
+                                    dut.mode, dut.game.bricks_q);
             exp_valid <= 1'b1;
         end
     end
 
     task automatic clear_color_counts();
-        n_white = 0; n_yellow = 0; n_grey = 0; n_green = 0; n_red = 0; n_other = 0;
+        n_white = 0; n_yellow = 0; n_grey = 0; n_green = 0; n_red = 0;
+        n_cyan = 0; n_magenta = 0; n_other = 0;
     endtask
 
     // ---------------- helpers ----------------
@@ -235,6 +245,7 @@ module tb_pong;
         check("green pixels (3 boxes 6x8)", n_green, 3 * 6 * 8);
         check("red pixels (5 boxes 6x8)", n_red, 5 * 6 * 8);
         check("grey pixels (net 2x240)", n_grey, 2 * 240);
+        check("no brick colors in Pong", n_cyan + n_magenta, 0);
         check("no other colors", n_other, 0);
 
         // Spot checks. The ball moves once per frame, so sample it first.
@@ -267,12 +278,66 @@ module tb_pong;
         sample_pixel("v blanking",             18,      500,     BLACK);
     endtask
 
+    // Brick breaker: game select on ui_in[4], held from reset.
+    task automatic test_brick_mode();
+        $display("--- test_brick_mode");
+        ui_in = 8'b0001_0000;
+        rst_n = 1'b0;
+        repeat (5) @(negedge clk);
+        rst_n = 1'b1;
+        wait_frames(1);
+        check("brick: mode selected by ui[4]", dut.mode, 1);
+        check("brick: wall full", dut.game.bricks_q, 32'h7FFF_7FFF);
+        ui_in = 8'b0001_0010;   wait_frames(2);     // P1 down
+        check("brick: p1 down x2", dut.game.p1_y_q, 216);
+        ui_in = 8'b0001_0000;
+
+        // Full wall: 30 bricks of 30x30 lit pixels, 15 per column.
+        clear_color_counts();
+        wait_frames(1);
+        check("brick: cyan pixels (15 bricks 30x30)", n_cyan, 15 * 30 * 30);
+        check("brick: magenta pixels (15 bricks 30x30)", n_magenta, 15 * 30 * 30);
+        check("brick: one paddle (8x64)", n_white, 8 * 64);
+        check("brick: ball (8x8)", n_yellow, 64);
+        check("brick: no net", n_grey, 0);
+        check("brick: no score boxes", n_green + n_red, 0);
+        check("brick: no other colors", n_other, 0);
+
+        // Knock out some bricks and record two misses.
+        dut.game.bricks_q[3]  = 1'b0;               // column 0, row 3
+        dut.game.bricks_q[16] = 1'b0;               // column 1, row 0
+        dut.game.bricks_q[30] = 1'b0;               // column 1, row 14
+        dut.game.score_r_q    = 3'd2;
+        wait_frames(1);
+        clear_color_counts();
+        wait_frames(1);
+        check("brick: cyan pixels (14 bricks)", n_cyan, 14 * 30 * 30);
+        check("brick: magenta pixels (13 bricks)", n_magenta, 13 * 30 * 30);
+        check("brick: miss boxes (2 x 6x8)", n_red, 2 * 6 * 8);
+
+        sample_pixel("brick col 0 row 0",         512, 0,   CYAN);
+        sample_pixel("brick col 0 row 0 corner",  541, 29,  CYAN);
+        sample_pixel("brick gap right",           542, 29,  BLACK);
+        sample_pixel("brick gap below",           541, 30,  BLACK);
+        sample_pixel("brick col 1 row 1",         544, 32,  MAGENTA);
+        sample_pixel("left of wall",              511, 40,  BLACK);
+        sample_pixel("right of wall",             576, 40,  BLACK);
+        sample_pixel("removed brick col 0 row 3", 520, 100, BLACK);
+        sample_pixel("brick col 1 row 3",         552, 100, MAGENTA);
+        sample_pixel("no net in brick mode",      319, 144, BLACK);
+        sample_pixel("no right paddle",           618, 230, BLACK);
+        sample_pixel("brick col 0 row 14",        520, 470, CYAN);
+        sample_pixel("removed brick col 1 row 14",552, 470, BLACK);
+        ui_in = 8'd0;
+    endtask
+
     initial begin
         clear_color_counts();
         test_reset();
         test_vga_timing();
         test_paddles();
         test_render_pixels();
+        test_brick_mode();
         check("pin mismatches vs reference model", mismatches, 0);
         $display("TESTBENCH_SUMMARY: %0d PASS, %0d FAIL", pass_count, fail_count);
         $display("TESTBENCH_RESULT: %s", (fail_count == 0) ? "PASS" : "FAIL");
@@ -281,7 +346,7 @@ module tb_pong;
 
     // Watchdog: a hung sim must not look like a pass. One frame = 16.8 ms.
     initial begin
-        #(1_000_000_000);
+        #(2_000_000_000);
         $display("TESTBENCH_RESULT: FAIL (timeout)");
         $finish;
     end
